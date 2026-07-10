@@ -38,3 +38,11 @@ and DIY enthusiasts looking to add coin-operated functionality to their projects
 8. Flash the microcontroller with the appropriate firmware to enable coin detection functionality.
 9. Test the coin slot by inserting coins and verifying that the sensor detects them correctly and sends the appropriate signals to the microcontroller.
 10. Adjust the sensitivity of the sensor using the potentiometer if needed to ensure reliable coin detection for different coin types and materials.
+
+## Pinouts
+
+### Pin headers out from CoinSlot Controller Box
+![Header Diagram](img/header.drawio.png)
+
+### Wiring Diagram
+![Wiring/Arduino Diagram](img/wiring.png)

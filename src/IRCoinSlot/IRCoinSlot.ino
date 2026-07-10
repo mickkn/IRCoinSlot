@@ -32,20 +32,16 @@
 
 #include <Keyboard.h>
 
-#define P1_LED 10               //BUTTON LED PWM ENABLED
-#define P1_BUT 11               //BUTTON INPUT ACTIVE LOW
+#define P1_LED 3                //BUTTON LED PWM ENABLED
+#define P1_BUT 2                //BUTTON INPUT ACTIVE LOW
 #define P1_COIN A1              //ANALOG INPUT
-#define P1_COIN_BUT 2           //SECONDARY COIN BUTTON
-#define P1_COIN_LED 12          //IR-LED POWER (could be VCC)
 #define P1_SENS A0              //SENSITIVITY POTENTIOMETER ANALOG INPUT
 #define P1_KEY_START "1"        //KEY TO SEND WHEN START BUTTON IS PRESSED
 #define P1_KEY_CREDIT "5"       //KEY TO SEND WHEN COIN IS DETECTED
 
-#define P2_LED 9                //BUTTON LED PWM ENABLED
-#define P2_BUT 8                //BUTTON INPUT ACTIVE LOW
+#define P2_LED 10               //BUTTON LED PWM ENABLED
+#define P2_BUT 14               //BUTTON INPUT ACTIVE LOW
 #define P2_COIN A2              //ANALOG INPUT
-#define P2_COIN_BUT 6           //SECONDARY COIN BUTTON
-#define P2_COIN_LED 7           //IR-LED POWER (could be VCC)
 #define P2_SENS A3              //SENSITIVITY POTENTIOMETER ANALOG INPUT
 #define P2_KEY_START "2"        //KEY TO SEND WHEN START BUTTON IS PRESSED
 #define P2_KEY_CREDIT "6"       //KEY TO SEND WHEN COIN IS DETECTED
@@ -73,20 +69,16 @@ struct PlayerState
     uint8_t     m_led_pin;          ///< PWM output pin for the start button LED.
     uint8_t     m_but_pin;          ///< Digital input pin for the start button (active LOW).
     uint8_t     m_coin_pin;         ///< Analog input pin for the IR coin sensor.
-    uint8_t     m_coin_but_pin;     ///< Digital input pin for the manual coin button (active LOW).
-    uint8_t     m_coin_led_pin;     ///< Digital output pin that supplies power to the IR emitter.
     uint8_t     m_sens_pin;         ///< Analog input pin for this player's sensitivity potentiometer.
     const char* m_key_start_ptr;    ///< Keyboard string sent when the start button is pressed.
     const char* m_key_credit_ptr;   ///< Keyboard string sent when a coin is detected.
 
     uint32_t    m_last_coin_ms;         ///< Timestamp of the last accepted coin detection (ms).
     uint32_t    m_last_but_ms;          ///< Timestamp of the last start-button press (ms).
-    uint32_t    m_last_coin_but_ms;     ///< Timestamp of the last manual coin-button press (ms).
     uint32_t    m_dim_start_ms;         ///< Timestamp when the current LED animation began (ms).
     uint32_t    m_last_led_update_ms;   ///< Timestamp of the most recent LED PWM write (ms).
     bool        m_coin_active;          ///< True while the sensor currently reads above the detection threshold.
     bool        m_but_prev;             ///< Previous start-button state; true = not pressed (INPUT_PULLUP high).
-    bool        m_coin_but_prev;        ///< Previous manual coin-button state; true = not pressed.
     bool        m_is_dimming;           ///< True while a coin-insert LED animation is in progress.
 };
 
@@ -104,13 +96,12 @@ static PlayerState s_p2_state; ///< Runtime state for Player 2.
 // ============================================================
 
 static void     init_player(PlayerState& player_state, uint8_t led_pin, uint8_t but_pin,
-                             uint8_t coin_pin, uint8_t coin_but_pin, uint8_t coin_led_pin,
+                             uint8_t coin_pin,
                              uint8_t sens_pin, const char* key_start_ptr, const char* key_credit_ptr);
 static void     trigger_credit(PlayerState& player_state);
 static uint16_t read_threshold(const PlayerState& player_state);
 static void     update_coin(PlayerState& player_state);
 static void     update_button(PlayerState& player_state);
-static void     update_coin_button(PlayerState& player_state);
 static void     update_led(PlayerState& player_state);
 
 
@@ -149,8 +140,6 @@ static void trigger_credit(PlayerState& player_state)
  * @param led_pin        PWM output pin for the start button LED.
  * @param but_pin        Digital input pin for the start button (active LOW).
  * @param coin_pin       Analog input pin for the IR coin sensor.
- * @param coin_but_pin   Digital input pin for the manual coin button (active LOW).
- * @param coin_led_pin   Digital output pin controlling IR emitter power.
  * @param sens_pin       Analog input pin for this player's sensitivity potentiometer.
  * @param key_start_ptr  Keyboard string to send when the start button is pressed.
  * @param key_credit_ptr Keyboard string to send when a coin is detected.
@@ -159,8 +148,6 @@ static void init_player(PlayerState&  player_state,
                          uint8_t       led_pin,
                          uint8_t       but_pin,
                          uint8_t       coin_pin,
-                         uint8_t       coin_but_pin,
-                         uint8_t       coin_led_pin,
                          uint8_t       sens_pin,
                          const char*   key_start_ptr,
                          const char*   key_credit_ptr)
@@ -168,29 +155,22 @@ static void init_player(PlayerState&  player_state,
     player_state.m_led_pin        = led_pin;
     player_state.m_but_pin        = but_pin;
     player_state.m_coin_pin       = coin_pin;
-    player_state.m_coin_but_pin   = coin_but_pin;
-    player_state.m_coin_led_pin   = coin_led_pin;
     player_state.m_sens_pin       = sens_pin;
     player_state.m_key_start_ptr  = key_start_ptr;
     player_state.m_key_credit_ptr = key_credit_ptr;
 
     player_state.m_last_coin_ms       = 0U;
     player_state.m_last_but_ms        = 0U;
-    player_state.m_last_coin_but_ms   = 0U;
     player_state.m_dim_start_ms       = 0U;
     player_state.m_last_led_update_ms = 0U;
     player_state.m_coin_active        = false;
     player_state.m_but_prev           = true;
-    player_state.m_coin_but_prev      = true;
     player_state.m_is_dimming         = false;
 
     pinMode(led_pin,      OUTPUT);
     pinMode(but_pin,      INPUT_PULLUP);
-    pinMode(coin_but_pin, INPUT_PULLUP);
-    pinMode(coin_led_pin, OUTPUT);
     pinMode(sens_pin,     INPUT);
 
-    digitalWrite(coin_led_pin, HIGH);
     analogWrite(led_pin, k_led_full);
 }
 
@@ -243,29 +223,6 @@ static void update_button(PlayerState& player_state)
     }
 
     player_state.m_but_prev = but_now;
-}
-
-
-/**
- * @brief Poll the manual coin button and fire a credit event on a falling-edge (button press).
- *
- * @param player_state Reference to the player state.
- */
-static void update_coin_button(PlayerState& player_state)
-{
-    bool     but_now = static_cast<bool>(digitalRead(player_state.m_coin_but_pin));
-    uint32_t now     = millis();
-
-    if(false == but_now && true == player_state.m_coin_but_prev)
-    {
-        if((now - player_state.m_last_coin_but_ms) >= static_cast<uint32_t>(k_but_debounce_ms))
-        {
-            trigger_credit(player_state);
-            player_state.m_last_coin_but_ms = now;
-        }
-    }
-
-    player_state.m_coin_but_prev = but_now;
 }
 
 
@@ -333,9 +290,9 @@ void setup()
     Keyboard.begin();
     analogReference(DEFAULT);
 
-    init_player(s_p1_state, P1_LED, P1_BUT, P1_COIN, P1_COIN_BUT, P1_COIN_LED,
+    init_player(s_p1_state, P1_LED, P1_BUT, P1_COIN,
                 P1_SENS, P1_KEY_START, P1_KEY_CREDIT);
-    init_player(s_p2_state, P2_LED, P2_BUT, P2_COIN, P2_COIN_BUT, P2_COIN_LED,
+    init_player(s_p2_state, P2_LED, P2_BUT, P2_COIN,
                 P2_SENS, P2_KEY_START, P2_KEY_CREDIT);
 }
 
@@ -349,8 +306,6 @@ void loop()
     update_coin(s_p2_state);
     update_button(s_p1_state);
     update_button(s_p2_state);
-    update_coin_button(s_p1_state);
-    update_coin_button(s_p2_state);
     update_led(s_p1_state);
     update_led(s_p2_state);
 }
