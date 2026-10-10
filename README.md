@@ -34,7 +34,7 @@ and DIY enthusiasts looking to add coin-operated functionality to their projects
 3. Install the coin guides on the inside of the arcade machine in the 2 x 28mm holes.
 4. Align the coin slot front plate with the holes and secure it in place using screws or adhesive.
 5. Mount the IR sensor in the designated square hole in the coin guides, ensuring it is properly positioned to detect coins passing through the slot.
-6. Connect the sensor to the microcontroller in the proper IO ports as per the wiring diagram provided in the documentation.
+6. Connect the sensor to the microcontroller in the proper IO ports as per the wiring diagram provided in the documentation. Wire a 10 kohm pull-up resistor from the phototransistor's collector to 5V, tie its emitter to GND, and take the analog signal from the collector. The input idles HIGH and is pulled down when a coin reflects IR light back into the sensor.
 7. Connect a 10 kohm potentiometer to the sensor for sensitivity adjustment, if necessary.
 8. Flash the microcontroller with the appropriate firmware to enable coin detection functionality.
 9. Test the coin slot by inserting coins and verifying that the sensor detects them correctly and sends the appropriate signals to the microcontroller.
@@ -44,7 +44,7 @@ and DIY enthusiasts looking to add coin-operated functionality to their projects
 
 With `DEBUG` set to `true`, open the Serial Monitor at 115200 baud to see timestamped coin detections, coin-button presses, start-button presses, keys sent, and LED fading start/stop events. Every two seconds, an `AIN` readout shows each enabled player's raw coin sensor value, raw sensitivity potentiometer value, calculated threshold, and detection status. The firmware never waits on Serial: debug text is queued in a 512-byte buffer and sent only as fast as USB accepts it. Text queued before a Serial Monitor connects is kept until one does, and new text is dropped if the buffer fills. Set `DEBUG` to `false` to disable Serial output.
 
-The sensitivity potentiometer adjusts the absolute detection threshold, not an offset from a calibrated idle reading. Its raw `sensitivity_pot_adc` value (0-1023) maps to `detection_threshold_adc` (200-800), and detection occurs when `coin_adc` exceeds that threshold. Lower thresholds make detection more sensitive; higher thresholds require a stronger sensor signal. `above_threshold_adc` shows the signed difference between the coin reading and the threshold: positive means detected, zero or negative means not detected. Adjustments take effect on every sensor poll; the updated values print every two seconds.
+The sensitivity potentiometer adjusts the absolute detection threshold, not an offset from a calibrated idle reading. Its raw `sensitivity_pot_adc` value (0-1023) maps to `detection_threshold_adc` (200-800). The phototransistor is wired with a pull-up on its collector and the signal taken from that collector, so `coin_adc` idles HIGH and is pulled down as reflected IR light increases. Detection therefore occurs when `coin_adc` drops **below** the threshold. Higher thresholds make detection more sensitive; lower thresholds require a stronger sensor signal. `below_threshold_adc` shows the signed difference between the threshold and the coin reading: positive means detected, zero or negative means not detected. Adjustments take effect on every sensor poll; the updated values print every two seconds.
 
 ## Pinouts
 
