@@ -34,7 +34,7 @@
 
 #define DEBUG true              //ENABLE DEBUG PRINTS TO SERIAL MONITOR
 
-#define P1_LED 3                //BUTTON LED PWM ENABLED
+#define P1_LED 3                //BUTTON LED PWM ENABLED (TIMER0)
 #define P1_BUT 2                //BUTTON INPUT ACTIVE LOW (INT1)
 #define P1_COIN_BUT 7           //BUTTON INPUT ACTIVE LOW (SKIPPING COIN INSERT) (INT6)
 #define P1_COIN A1              //ANALOG INPUT
@@ -43,7 +43,7 @@
 #define P1_KEY_CREDIT "5"       //KEY TO SEND WHEN COIN IS DETECTED
 
 #define P2_ENABLE true          //ENABLE SECOND PLAYER
-#define P2_LED 10               //BUTTON LED PWM ENABLED
+#define P2_LED 5                //BUTTON LED PWM ENABLED (TIMER3)
 #define P2_BUT 14               //BUTTON INPUT ACTIVE LOW (PCINT3)
 #define P2_COIN_BUT 15          //BUTTON INPUT ACTIVE LOW (SKIPPING COIN INSERT) (PCINT1)
 #define P2_COIN A2              //ANALOG INPUT
@@ -60,6 +60,7 @@ constexpr uint16_t k_dim_duration_ms = 2000; ///< Duration of one repeating LED 
 constexpr uint16_t k_but_debounce_ms = 50;  ///< Release time required before a button re-arms, in ms.
 constexpr uint16_t k_thresh_lo       = 200; ///< Lowest possible coin-sensor threshold (ADC units); least sensitive.
 constexpr uint16_t k_thresh_hi       = 800; ///< Highest possible coin-sensor threshold (ADC units); most sensitive.
+constexpr uint16_t k_coin_hysteresis = 30;  ///< Release threshold offset above the detection threshold (ADC units).
 constexpr uint32_t k_debug_interval_ms = 2000; ///< Interval between analog debug readouts.
 constexpr uint16_t k_debug_buf_size  = 512; ///< Size of the non-blocking debug output ring buffer.
 constexpr uint8_t  k_max_pcint_buttons = 4; ///< Maximum number of buttons sharing the PCINT0 vector.
@@ -103,16 +104,17 @@ struct PlayerState
     uint32_t    m_last_coin_ms;         ///< Timestamp of the last accepted coin detection (ms).
     uint32_t    m_dim_start_ms;         ///< Timestamp when the current LED animation began (ms).
     uint32_t    m_last_led_update_ms;   ///< Timestamp of the most recent LED PWM write (ms).
-    bool        m_coin_active;          ///< True while the sensor currently reads above the detection threshold.
+    bool        m_coin_active;          ///< Set when the sensor reads below the detection threshold; cleared at threshold + k_coin_hysteresis or above.
     bool        m_is_dimming;           ///< True while the LED fade is running.
 };
 
 /**
  * @brief Print target that queues debug text and sends it to USB Serial without blocking.
  *
- * Text that does not fit in the ring buffer is dropped. While no Serial Monitor is
- * connected, text stays queued. drain() writes only as many bytes as the USB CDC
- * endpoint can accept immediately.
+ * While no Serial Monitor is connected, text stays queued. When the ring buffer is full,
+ * new text is dropped and counted; dropping continues until the queued text has been
+ * sent, then a "[N debug bytes dropped]" notice is printed in place of the lost text.
+ * drain() writes only as many bytes as the USB CDC endpoint can accept immediately.
  */
 class DebugBuffer : public Print
 {
@@ -120,8 +122,13 @@ public:
     size_t write(uint8_t c) override
     {
         uint16_t next = static_cast<uint16_t>((m_head + 1U) % k_debug_buf_size);
-        if(next == m_tail)
+        // Once text is lost, keep dropping until the notice is queued to preserve ordering.
+        if(next == m_tail || 0U != m_dropped)
         {
+            if(0xFFFFFFFFUL != m_dropped)
+            {
+                ++m_dropped;
+            }
             return 0U;
         }
         m_buf[m_head] = c;
@@ -137,8 +144,22 @@ public:
             return;
         }
 
-        while(m_tail != m_head)
+        for(;;)
         {
+            if(m_tail == m_head)
+            {
+                if(0U == m_dropped)
+                {
+                    return;
+                }
+                uint32_t dropped = m_dropped;
+                m_dropped        = 0U;
+                print(F("\r\n["));
+                print(dropped);
+                println(F(" debug bytes dropped]"));
+                continue;
+            }
+
             int space = Serial.availableForWrite();
             if(space <= 0)
             {
@@ -156,8 +177,9 @@ public:
 
 private:
     uint8_t  m_buf[k_debug_buf_size];
-    uint16_t m_head = 0U;
-    uint16_t m_tail = 0U;
+    uint16_t m_head    = 0U;
+    uint16_t m_tail    = 0U;
+    uint32_t m_dropped = 0U;
 };
 
 
@@ -186,7 +208,7 @@ static bool     take_press(Button& button);
 static void     rearm_button(Button& button);
 static void     trigger_credit(PlayerState& player_state);
 static uint16_t read_threshold(const PlayerState& player_state);
-static bool     is_coin_present(uint16_t sensor_val, uint16_t threshold);
+static bool     is_coin_present(uint16_t sensor_val, uint16_t threshold, bool coin_active);
 static void     update_coin(PlayerState& player_state);
 static void     update_buttons(PlayerState& player_state);
 static void     update_led(PlayerState& player_state);
@@ -241,10 +263,11 @@ static void button_isr(Button& button)
  */
 static bool take_press(Button& button)
 {
+    const uint8_t old_sreg = SREG;
     noInterrupts();
     bool pending     = button.m_pending;
     button.m_pending = false;
-    interrupts();
+    SREG = old_sreg;
     return pending;
 }
 
@@ -277,11 +300,12 @@ static void rearm_button(Button& button)
 
     if((now - button.m_high_since_ms) >= static_cast<uint32_t>(k_but_debounce_ms))
     {
+        const uint8_t old_sreg = SREG;
         noInterrupts();
         button.m_armed = true;
         // Catch a press that started between the HIGH read and arming.
         button_isr(button);
-        interrupts();
+        SREG = old_sreg;
         button.m_high_seen = false;
     }
 }
@@ -356,8 +380,10 @@ static void debug_analog(const PlayerState& player_state)
     s_debug.print(threshold);
     s_debug.print(F(" below_threshold_adc="));
     s_debug.print(static_cast<int16_t>(threshold) - static_cast<int16_t>(sensor_val));
+    s_debug.print(F(" release_threshold_adc="));
+    s_debug.print(threshold + k_coin_hysteresis);
     s_debug.print(F(" detected="));
-    s_debug.println(is_coin_present(sensor_val, threshold) ? F("yes") : F("no"));
+    s_debug.println(is_coin_present(sensor_val, threshold, player_state.m_coin_active) ? F("yes") : F("no"));
 }
 
 
@@ -402,15 +428,21 @@ static uint16_t read_threshold(const PlayerState& player_state)
  *
  * The ITR20001 phototransistor is wired with a pull-up on its collector and the signal
  * taken from that collector, so the input idles HIGH in darkness and is pulled DOWN as
- * reflected IR light increases. A coin is therefore present when the reading drops
- * below the threshold.
+ * reflected IR light increases. A coin is detected when the reading drops below the
+ * threshold and released only once it rises to threshold + k_coin_hysteresis or higher,
+ * so noise around the threshold cannot toggle the state.
  *
- * @param sensor_val Raw coin sensor reading (ADC units).
- * @param threshold  Current detection threshold (ADC units).
+ * @param sensor_val  Raw coin sensor reading (ADC units).
+ * @param threshold   Current detection threshold (ADC units).
+ * @param coin_active Current detection state.
  * @return bool True when a coin is detected.
  */
-static bool is_coin_present(uint16_t sensor_val, uint16_t threshold)
+static bool is_coin_present(uint16_t sensor_val, uint16_t threshold, bool coin_active)
 {
+    if(coin_active)
+    {
+        return sensor_val < (threshold + k_coin_hysteresis);
+    }
     return sensor_val < threshold;
 }
 
@@ -485,7 +517,8 @@ static void init_player(PlayerState&  player_state,
  * @brief Poll the IR coin sensor and fire a credit event on each new detection.
  *
  * The sensor input idles HIGH and is pulled down by reflected IR, so a coin is seen as a
- * falling ADC edge past the threshold. A coin is accepted once per insertion;
+ * falling ADC edge past the threshold. The reading must rise k_coin_hysteresis above the
+ * threshold before another coin can be detected. A coin is accepted once per insertion;
  * COIN_DEBOUNCE_DELAY guards against re-triggering caused by mechanical bounce or slow
  * coin travel.
  *
@@ -496,7 +529,7 @@ static void update_coin(PlayerState& player_state)
     uint16_t threshold  = read_threshold(player_state);
     uint16_t sensor_val = static_cast<uint16_t>(analogRead(player_state.m_coin_pin));
     uint32_t now        = millis();
-    bool     coin_now   = is_coin_present(sensor_val, threshold);
+    bool     coin_now   = is_coin_present(sensor_val, threshold, player_state.m_coin_active);
 
     if(true == coin_now && false == player_state.m_coin_active)
     {
