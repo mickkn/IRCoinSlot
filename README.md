@@ -35,7 +35,7 @@ and DIY enthusiasts looking to add coin-operated functionality to their projects
 4. Align the coin slot front plate with the holes and secure it in place using screws or adhesive.
 5. Mount the IR sensor in the designated square hole in the coin guides, ensuring it is properly positioned to detect coins passing through the slot.
 6. Connect the sensor to the microcontroller in the proper IO ports as per the wiring diagram provided in the documentation. Wire a 10 kohm pull-up resistor from the phototransistor's collector to 5V, tie its emitter to GND, and take the analog signal from the collector. The input idles HIGH and is pulled down when a coin reflects IR light back into the sensor.
-7. Connect a 10 kohm potentiometer to the sensor for sensitivity adjustment, if necessary.
+7. Connect each 10 kohm sensitivity potentiometer's outer terminals to 5V and GND, and its wiper to the player's sensitivity input (A0 for Player 1, A3 for Player 2).
 8. Flash the microcontroller with the appropriate firmware to enable coin detection functionality.
 9. Test the coin slot by inserting coins and verifying that the sensor detects them correctly and sends the appropriate signals to the microcontroller.
 10. Adjust the sensitivity of the sensor using the potentiometer if needed to ensure reliable coin detection for different coin types and materials.
@@ -57,7 +57,86 @@ All buttons are interrupt-driven: `P1_BUT` (pin 2, INT1), `P1_COIN_BUT` (pin 7, 
 Each enabled player's LED uses PWM (`P1_LED` pin 3, `P2_LED` pin 5) and is off at startup. An accepted IR coin or coin-button press starts continuous fading from minimum brightness up to full brightness and back, with a 2-second cycle (`k_dim_duration_ms`). The fade stays between PWM 1 (`k_led_min`) and 255, never reaching zero, so PWM remains active at the bottom of the cycle. A start-button press sends one start key (`1` or `2`) immediately, stops that player's fading, and turns the LED off. Holding Start does not repeat the key; release it for at least 50 ms before pressing again. A new credit starts the fading again.
 
 ### Pin headers out from CoinSlot Controller Box
-![Header Diagram](img/header.drawio.png)
+
+```text
+                         Player 1
+
+   Start LED  o--- D3             D2 ---o  Start Button
+         GND  o--- GND           GND ---o  GND
+          5V  o--- VCC            5V ---o  5V
+      Unused  o--- GND           GND ---o  GND
+ Coin Button  o--- D7             A1 ---o  IR Sensor
+
+                         Player 2
+
+   Start LED  o--- D5            D14 ---o  Start Button
+         GND  o--- GND           GND ---o  GND
+          5V  o--- VCC            5V ---o  5V
+      Unused  o--- GND           GND ---o  GND
+ Coin Button  o--- D15            A2 ---o  IR Sensor
+```
 
 ### Wiring Diagram
-![Wiring/Arduino Diagram](img/wiring.png)
+
+Arduino Pro Micro / ATmega32u4, **5V / 16 MHz**. Pin labels below match the firmware, not the physical order of the board's headers. Connect all grounds together.
+
+```text
+                         Pro Micro (5V)
+                    +----------------------+
+ P1 start LED <-----| D3 (PWM)    D5 (PWM) |-----> P2 start LED
+ P1 start switch ---| D2               D14 |--- P2 start switch
+ P1 coin switch ----| D7               D15 |--- P2 coin switch
+ P1 sensor OUT -----| A1                A2 |--- P2 sensor OUT
+ P1 pot wiper ------| A0                A3 |--- P2 pot wiper
+                    | VCC (5V)         GND |
+                    +----------------------+
+
+ Start and coin switches (each):
+   Input pin --------o  o-------- GND
+                     switch
+   Internal pull-up enabled; pressing connects the input to GND.
+
+ Start button LED (each, bare LED):
+   PWM pin ----[330 ohm]---- LED anode (+)
+                            LED cathode (-) ---- GND
+
+ Sensitivity potentiometer (each, 10 kohm linear):
+   5V --------[ 10 kohm pot ]-------- GND
+                      |
+                    wiper
+                      |
+              A0 (P1) or A3 (P2)
+```
+
+### ITR20001/T sensor wiring (one circuit per player)
+
+The sensor contains a separate IR LED and phototransistor. Wire by terminal function below; verify the physical lead orientation against the [Everlight datasheet](https://everlightamericas.com/datasheets/ITR20001_T.pdf) before connecting it.
+
+```text
+ IR emitter:
+
+   5V ----[220 ohm]---- Anode (A)
+                       IR LED
+   GND --------------- Cathode (K)
+
+ Reflected-light detector:
+
+   5V ----[10 kohm]----+---- OUT to A1 (P1) or A2 (P2)
+                      |
+                      C
+                Phototransistor
+                      E
+                      |
+                     GND
+```
+
+| Component                             | Value per player | Purpose                                                                            |
+|---------------------------------------|------------------|------------------------------------------------------------------------------------|
+| IR LED series resistor                | 220 ohm, 1/4 W   | Limits emitter current to roughly 17 mA at 5V with a typical 1.2V forward drop.    |
+| Phototransistor pull-up               | 10 kohm, 1/4 W   | Pulls OUT toward 5V when little IR light is reflected.                             |
+| Sensitivity potentiometer             | 10 kohm linear   | Sets the firmware threshold through A0 or A3; not in series with the sensor.       |
+| Bare start-button LED series resistor | 330 ohm, 1/4 W   | Limits LED current; choose for the actual LED's forward voltage and rated current. |
+
+Use a separate resistor for each LED and each sensor output. The **220 ohm resistor belongs in series with the IR LED**, not in place of the phototransistor's **10 kohm pull-up**. When a coin reflects IR light, the phototransistor pulls OUT lower; the firmware detects this falling analog signal.
+
+The start-button LED circuit assumes a bare low-current LED suitable for direct GPIO drive. A button with a built-in resistor may not need another series resistor; a higher-current or 12V lamp needs a suitable driver rather than a direct GPIO connection.
