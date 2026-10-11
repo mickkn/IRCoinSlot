@@ -85,20 +85,20 @@ Arduino Pro Micro / ATmega32u4, **5V / 16 MHz**. Pin labels below match the firm
                     +----------------------+
  P1 start LED <-----| D3 (PWM)    D5 (PWM) |-----> P2 start LED
  P1 start switch ---| D2               D14 |--- P2 start switch
- P1 coin switch ----| D7               D15 |--- P2 coin switch
- P1 sensor OUT -----| A1                A2 |--- P2 sensor OUT
- P1 pot wiper ------| A0                A3 |--- P2 pot wiper
+ P1 coin switch ----| D7               D15 |---- P2 coin switch
+ P1 sensor OUT -----| A1                A2 |----- P2 sensor OUT
+ P1 pot wiper ------| A0                A3 |------ P2 pot wiper
                     | VCC (5V)         GND |
                     +----------------------+
 
  Start and coin switches (each):
-   Input pin --------o  o-------- GND
+   Input pin --------o    o-------- GND
                      switch
    Internal pull-up enabled; pressing connects the input to GND.
 
  Start button LED (each, bare LED):
    PWM pin ----[330 ohm]---- LED anode (+)
-                            LED cathode (-) ---- GND
+                             LED cathode (-) ---- GND
 
  Sensitivity potentiometer (each, 10 kohm linear):
    5V --------[ 10 kohm pot ]-------- GND
@@ -116,18 +116,18 @@ The sensor contains a separate IR LED and phototransistor. Wire by terminal func
  IR emitter:
 
    5V ----[220 ohm]---- Anode (A)
-                       IR LED
-   GND --------------- Cathode (K)
+                        IR LED
+   GND ---------------- Cathode (K)
 
  Reflected-light detector:
 
    5V ----[10 kohm]----+---- OUT to A1 (P1) or A2 (P2)
-                      |
-                      C
-                Phototransistor
-                      E
-                      |
-                     GND
+                       |
+                       C
+                 Phototransistor
+                       E
+                       |
+                      GND
 ```
 
 | Component                             | Value per player | Purpose                                                                            |
