@@ -48,13 +48,13 @@ The sensitivity potentiometer adjusts the absolute detection threshold, not an o
 
 ## Pinouts
 
-Set `P2_ENABLE` in the firmware to `true` to enable Player 2 (default: `false`). When disabled, Player 2's pins are not configured, its inputs are not polled, and no Player 2 keyboard events or LED updates are generated. Player 1 remains active.
+Set `P1_ENABLE` or `P2_ENABLE` in the firmware to `true` to enable Player 1 or Player 2. When a player is disabled, its pins are not configured, its inputs are not polled, and no keyboard events, LED updates or debug readouts are generated for that player. The other player is unaffected.
 
 Connect each optional coin-insert button between its input pin and GND: `P1_COIN_BUT` on pin 7 and `P2_COIN_BUT` on pin 15. Internal pull-ups are enabled. A press sends Player 1's credit key (`5`) or Player 2's credit key (`6`) and starts that player's repeating LED fade. Release the button for at least 50 ms before pressing again.
 
 All buttons are interrupt-driven: `P1_BUT` (pin 2, INT1), `P1_COIN_BUT` (pin 7, INT6), `P2_BUT` (pin 14, PCINT3) and `P2_COIN_BUT` (pin 15, PCINT1). The interrupt records a press as soon as it happens, even while the firmware is busy, and the main loop sends the key right away. Any button pin you change must also be interrupt-capable on the ATmega32u4: pins 0, 1, 2, 3 or 7, or pin-change pins 8–11 or 14–17.
 
-Each enabled player's LED uses PWM (`P1_LED` pin 3, `P2_LED` pin 5) and is off at startup. An accepted IR coin or coin-button press starts continuous fading from off up to full brightness and back, with a 2-second cycle (`k_dim_duration_ms`). A start-button press sends one start key (`1` or `2`) immediately, stops that player's fading, and turns the LED off. Holding Start does not repeat the key; release it for at least 50 ms before pressing again. A new credit starts the fading again.
+Each enabled player's LED uses PWM (`P1_LED` pin 3, `P2_LED` pin 5) and is off at startup. An accepted IR coin or coin-button press starts continuous fading from minimum brightness up to full brightness and back, with a 2-second cycle (`k_dim_duration_ms`). The fade stays between PWM 1 (`k_led_min`) and 255, never reaching zero, so PWM remains active at the bottom of the cycle. A start-button press sends one start key (`1` or `2`) immediately, stops that player's fading, and turns the LED off. Holding Start does not repeat the key; release it for at least 50 ms before pressing again. A new credit starts the fading again.
 
 ### Pin headers out from CoinSlot Controller Box
 ![Header Diagram](img/header.drawio.png)

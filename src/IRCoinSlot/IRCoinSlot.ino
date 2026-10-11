@@ -32,8 +32,9 @@
 
 #include <Keyboard.h>
 
-#define DEBUG true              //ENABLE DEBUG PRINTS TO SERIAL MONITOR
+#define DEBUG false             //ENABLE DEBUG PRINTS TO SERIAL MONITOR
 
+#define P1_ENABLE true          //ENABLE FIRST PLAYER
 #define P1_LED 3                //BUTTON LED PWM ENABLED (TIMER0)
 #define P1_BUT 2                //BUTTON INPUT ACTIVE LOW (INT1)
 #define P1_COIN_BUT 7           //BUTTON INPUT ACTIVE LOW (SKIPPING COIN INSERT) (INT6)
@@ -54,16 +55,17 @@
 #define DIM_DELAY           5   //DIMMER SPEED - LED PWM UPDATE INTERVAL IN MS
 #define COIN_DEBOUNCE_DELAY 50  //DEBOUNCE DELAY IN MS
 
-constexpr uint8_t  k_led_full        = 255; ///< Peak button LED brightness during the fade (PWM 0-255).
-constexpr uint8_t  k_led_off         = 0;   ///< LED off; PWM is disabled on the pin.
-constexpr uint16_t k_dim_duration_ms = 2000; ///< Duration of one repeating LED fade cycle (off -> full -> off) in ms.
-constexpr uint16_t k_but_debounce_ms = 50;  ///< Release time required before a button re-arms, in ms.
-constexpr uint16_t k_thresh_lo       = 200; ///< Lowest possible coin-sensor threshold (ADC units); least sensitive.
-constexpr uint16_t k_thresh_hi       = 800; ///< Highest possible coin-sensor threshold (ADC units); most sensitive.
-constexpr uint16_t k_coin_hysteresis = 30;  ///< Release threshold offset above the detection threshold (ADC units).
+constexpr uint8_t  k_led_full          = 255;  ///< Peak button LED brightness during the fade (PWM 0-255).
+constexpr uint8_t  k_led_min           = 10;   ///< Minimum fade brightness; keeps PWM active at the trough.
+constexpr uint8_t  k_led_off           = 0;    ///< LED off; PWM is disabled on the pin.
+constexpr uint16_t k_dim_duration_ms   = 2000; ///< Duration of one repeating LED fade cycle (min -> full -> min) in ms.
+constexpr uint16_t k_but_debounce_ms   = 50;   ///< Release time required before a button re-arms, in ms.
+constexpr uint16_t k_thresh_lo         = 200;  ///< Lowest possible coin-sensor threshold (ADC units); least sensitive.
+constexpr uint16_t k_thresh_hi         = 800;  ///< Highest possible coin-sensor threshold (ADC units); most sensitive.
+constexpr uint16_t k_coin_hysteresis   = 30;   ///< Release threshold offset above the detection threshold (ADC units).
 constexpr uint32_t k_debug_interval_ms = 2000; ///< Interval between analog debug readouts.
-constexpr uint16_t k_debug_buf_size  = 512; ///< Size of the non-blocking debug output ring buffer.
-constexpr uint8_t  k_max_pcint_buttons = 4; ///< Maximum number of buttons sharing the PCINT0 vector.
+constexpr uint16_t k_debug_buf_size    = 512;  ///< Size of the non-blocking debug output ring buffer.
+constexpr uint8_t  k_max_pcint_buttons = 4;    ///< Maximum number of buttons sharing the PCINT0 vector.
 
 
 // ============================================================
@@ -397,7 +399,10 @@ static void update_debug()
         if((now - last_readout_ms) >= k_debug_interval_ms && Serial.dtr())
         {
             last_readout_ms = now;
-            debug_analog(s_p1_state);
+            if(P1_ENABLE)
+            {
+                debug_analog(s_p1_state);
+            }
             if(P2_ENABLE)
             {
                 debug_analog(s_p2_state);
@@ -586,8 +591,8 @@ static void update_buttons(PlayerState& player_state)
 /**
  * @brief Repeatedly fade the start button PWM LED after a credit, until Start is pressed.
  *
- * Phase 1 (first half of k_dim_duration_ms): fades up from k_led_off to k_led_full.
- * Phase 2 (second half): fades back down from k_led_full to k_led_off.
+ * Phase 1 (first half of k_dim_duration_ms): fades up from k_led_min to k_led_full.
+ * Phase 2 (second half): fades back down from k_led_full to k_led_min.
  * The cycle repeats while m_is_dimming is true.
  * Updates are throttled to one PWM write per DIM_DELAY ms.
  *
@@ -617,14 +622,14 @@ static void update_led(PlayerState& player_state)
     {
         brightness = static_cast<uint8_t>(map(static_cast<long>(elapsed), 0L,
                                               static_cast<long>(half_dur),
-                                              k_led_off, k_led_full));
+                                              k_led_min, k_led_full));
     }
     else
     {
         brightness = static_cast<uint8_t>(map(static_cast<long>(elapsed),
                                               static_cast<long>(half_dur),
                                               static_cast<long>(k_dim_duration_ms),
-                                              k_led_full, k_led_off));
+                                              k_led_full, k_led_min));
     }
     analogWrite(player_state.m_led_pin, brightness);
 }
@@ -646,8 +651,11 @@ void setup()
     Keyboard.begin();
     analogReference(DEFAULT);
 
-    init_player(s_p1_state, 1U, P1_LED, P1_BUT, P1_COIN_BUT, P1_COIN,
-                P1_SENS, P1_KEY_START, P1_KEY_CREDIT);
+    if(P1_ENABLE)
+    {
+        init_player(s_p1_state, 1U, P1_LED, P1_BUT, P1_COIN_BUT, P1_COIN,
+                    P1_SENS, P1_KEY_START, P1_KEY_CREDIT);
+    }
     if(P2_ENABLE)
     {
         init_player(s_p2_state, 2U, P2_LED, P2_BUT, P2_COIN_BUT, P2_COIN,
@@ -660,6 +668,8 @@ void setup()
         s_debug.print(k_thresh_lo);
         s_debug.print(F(" to "));
         s_debug.println(k_thresh_hi);
+        s_debug.print(F("Player 1: "));
+        s_debug.println(P1_ENABLE ? F("enabled") : F("disabled"));
         s_debug.print(F("Player 2: "));
         s_debug.println(P2_ENABLE ? F("enabled") : F("disabled"));
     }
@@ -671,9 +681,12 @@ void setup()
  */
 void loop()
 {
-    update_buttons(s_p1_state);
-    update_coin(s_p1_state);
-    update_led(s_p1_state);
+    if(P1_ENABLE)
+    {
+        update_buttons(s_p1_state);
+        update_coin(s_p1_state);
+        update_led(s_p1_state);
+    }
 
     if(P2_ENABLE)
     {
