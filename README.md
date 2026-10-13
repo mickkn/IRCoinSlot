@@ -7,6 +7,7 @@ and DIY enthusiasts looking to add coin-operated functionality to their projects
 
 ## Features
 - Detects coins using an IR reflective sensor.
+- Each player's ADC coin trigger has a 2-second cooldown after an accepted insertion; ignored detections do not extend it. The first coin after startup is accepted immediately, and the sensor must release before a new detection. Coin-insert buttons retain their separate 50 ms release debounce.
 - Simple design for easy integration into DIY arcade machines.
 - Compatible with u32u4-based microcontrollers.
 - Provides reliable coin detection for various coin sizes.
@@ -41,6 +42,8 @@ and DIY enthusiasts looking to add coin-operated functionality to their projects
 10. Adjust the sensitivity of the sensor using the potentiometer if needed to ensure reliable coin detection for different coin types and materials.
 
 ## Debug Serial output
+
+Each accepted IR coin detection logs the exact ADC sample that triggered it, for example `1234 ms P1: IR coin detected; coin_adc=420`.
 
 With `DEBUG` set to `true`, open the Serial Monitor at 115200 baud to see timestamped coin detections, coin-button presses, start-button presses, keys sent, and LED fading start/stop events. Every two seconds, an `AIN` readout shows each enabled player's raw coin sensor value, raw sensitivity potentiometer value, calculated threshold, release threshold, and detection status. The firmware never waits on Serial: debug text is queued in a 512-byte buffer and sent only as fast as USB accepts it. Text queued before a Serial Monitor connects is kept until one does. If the buffer fills, newer text is dropped and counted; once the queued text has been sent, a `[N debug bytes dropped]` line marks where text was lost. Set `DEBUG` to `false` to disable Serial output.
 

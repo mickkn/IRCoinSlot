@@ -32,7 +32,7 @@
 
 #include <Keyboard.h>
 
-#define DEBUG false             //ENABLE DEBUG PRINTS TO SERIAL MONITOR
+#define DEBUG true             //ENABLE DEBUG PRINTS TO SERIAL MONITOR
 
 #define P1_ENABLE true          //ENABLE FIRST PLAYER
 #define P1_LED 3                //BUTTON LED PWM ENABLED (TIMER0)
@@ -53,15 +53,15 @@
 #define P2_KEY_CREDIT "6"       //KEY TO SEND WHEN COIN IS DETECTED
 
 #define DIM_DELAY           5   //DIMMER SPEED - LED PWM UPDATE INTERVAL IN MS
-#define COIN_DEBOUNCE_DELAY 50  //DEBOUNCE DELAY IN MS
+#define COIN_DEBOUNCE_DELAY 2000 //ADC COIN COOLDOWN AFTER AN ACCEPTED INSERT, IN MS
 
 constexpr uint8_t  k_led_full          = 255;  ///< Peak button LED brightness during the fade (PWM 0-255).
 constexpr uint8_t  k_led_min           = 10;   ///< Minimum fade brightness; keeps PWM active at the trough.
 constexpr uint8_t  k_led_off           = 0;    ///< LED off; PWM is disabled on the pin.
 constexpr uint16_t k_dim_duration_ms   = 2000; ///< Duration of one repeating LED fade cycle (min -> full -> min) in ms.
 constexpr uint16_t k_but_debounce_ms   = 50;   ///< Release time required before a button re-arms, in ms.
-constexpr uint16_t k_thresh_lo         = 200;  ///< Lowest possible coin-sensor threshold (ADC units); least sensitive.
-constexpr uint16_t k_thresh_hi         = 800;  ///< Highest possible coin-sensor threshold (ADC units); most sensitive.
+constexpr uint16_t k_thresh_lo         = 500;  ///< Lowest possible coin-sensor threshold (ADC units); least sensitive.
+constexpr uint16_t k_thresh_hi         = 1020;  ///< Highest possible coin-sensor threshold (ADC units); most sensitive.
 constexpr uint16_t k_coin_hysteresis   = 30;   ///< Release threshold offset above the detection threshold (ADC units).
 constexpr uint32_t k_debug_interval_ms = 2000; ///< Interval between analog debug readouts.
 constexpr uint16_t k_debug_buf_size    = 512;  ///< Size of the non-blocking debug output ring buffer.
@@ -500,7 +500,7 @@ static void init_player(PlayerState&  player_state,
     player_state.m_key_start_ptr  = key_start_ptr;
     player_state.m_key_credit_ptr = key_credit_ptr;
 
-    player_state.m_last_coin_ms       = 0U;
+    player_state.m_last_coin_ms       = millis() - static_cast<uint32_t>(COIN_DEBOUNCE_DELAY);
     player_state.m_dim_start_ms       = 0U;
     player_state.m_last_led_update_ms = 0U;
     player_state.m_coin_active        = false;
@@ -524,8 +524,8 @@ static void init_player(PlayerState&  player_state,
  * The sensor input idles HIGH and is pulled down by reflected IR, so a coin is seen as a
  * falling ADC edge past the threshold. The reading must rise k_coin_hysteresis above the
  * threshold before another coin can be detected. A coin is accepted once per insertion;
- * COIN_DEBOUNCE_DELAY guards against re-triggering caused by mechanical bounce or slow
- * coin travel.
+ * COIN_DEBOUNCE_DELAY blocks new ADC credits for two seconds after an accepted coin.
+ * Ignored detections do not extend the cooldown and must release before retriggering.
  *
  * @param player_state Reference to the player state.
  */
@@ -540,7 +540,14 @@ static void update_coin(PlayerState& player_state)
     {
         if((now - player_state.m_last_coin_ms) >= static_cast<uint32_t>(COIN_DEBOUNCE_DELAY))
         {
-            debug_event(player_state, F("IR coin detected"));
+            if(DEBUG)
+            {
+                s_debug.print(now);
+                s_debug.print(F(" ms P"));
+                s_debug.print(player_state.m_id);
+                s_debug.print(F(": IR coin detected; coin_adc="));
+                s_debug.println(sensor_val);
+            }
             trigger_credit(player_state);
             player_state.m_last_coin_ms = now;
         }
