@@ -67,6 +67,10 @@ constexpr uint16_t k_coin_hysteresis   = 30;   ///< Release threshold offset abo
 constexpr uint32_t k_debug_interval_ms = 2000; ///< Interval between analog debug readouts.
 constexpr uint16_t k_debug_buf_size    = 512;  ///< Size of the non-blocking debug output ring buffer.
 constexpr uint8_t  k_max_pcint_buttons = 4;    ///< Maximum number of buttons sharing the PCINT0 vector.
+constexpr uint16_t k_key_hold_ms       = 50;   ///< How long each emulated key is held down, in ms.
+constexpr uint16_t k_key_gap_ms        = 50;   ///< Released gap enforced before the same key repeats, in ms.
+constexpr uint8_t  k_key_slots         = 6;    ///< Distinct keys that can be held or cooling down at once.
+constexpr uint8_t  k_key_queue_size    = 16;   ///< Pending key-press requests buffered before dispatch.
 
 
 // ============================================================
@@ -186,6 +190,124 @@ private:
 };
 
 
+/**
+ * @brief Non-blocking keyboard key scheduler.
+ *
+ * Emulated key presses are queued, then each key is held down for k_key_hold_ms and
+ * released, all driven by millis() in service() with no delay() anywhere. Distinct keys
+ * are held simultaneously and independently, so one player's or input's key never cuts
+ * another short. A key that is still held (or within its k_key_gap_ms released gap) is
+ * not re-pressed until that gap elapses, so repeated presses of the same key register as
+ * separate presses. This gives arcade software such as MAME a key-down long enough to
+ * sample without ever blocking sensor polling, button handling or LED updates.
+ */
+class KeyScheduler
+{
+public:
+    /**
+     * @brief Queue a key string for non-blocking emulation.
+     *
+     * Every character of the (single- or multi-character) string is appended to the
+     * pending-press queue and dispatched later by service(). If the queue is full the
+     * request is dropped rather than blocking. Call only from the main loop, not an ISR.
+     *
+     * @param key_ptr Null-terminated key string to emulate; nullptr is ignored.
+     */
+    void enqueue(const char* key_ptr)
+    {
+        if(nullptr == key_ptr)
+        {
+            return;
+        }
+        for(const char* p = key_ptr; '\0' != *p; ++p)
+        {
+            uint8_t next = static_cast<uint8_t>((m_q_head + 1U) % k_key_queue_size);
+            if(next == m_q_tail)
+            {
+                return; // Queue full; drop the request rather than block.
+            }
+            m_queue[m_q_head] = *p;
+            m_q_head          = next;
+        }
+    }
+
+    /**
+     * @brief Advance key hold/cooldown timers and dispatch pending presses.
+     *
+     * Releases any key whose k_key_hold_ms hold has elapsed, frees any key whose
+     * k_key_gap_ms released gap has elapsed, then presses queued keys into free slots.
+     * A key already held or cooling down is left queued until its gap expires, so repeats
+     * of the same key stay distinct. Uses only millis() comparisons and never blocks.
+     * Call once per main-loop iteration.
+     */
+    void service()
+    {
+        uint32_t now = millis();
+
+        for(uint8_t i = 0U; i < k_key_slots; i++)
+        {
+            Slot& slot = m_slots[i];
+            if(State::held == slot.m_state && (now - slot.m_until_ms) < 0x80000000UL)
+            {
+                Keyboard.release(slot.m_key);
+                slot.m_state    = State::cooldown;
+                slot.m_until_ms = now + static_cast<uint32_t>(k_key_gap_ms);
+            }
+            else if(State::cooldown == slot.m_state && (now - slot.m_until_ms) < 0x80000000UL)
+            {
+                slot.m_state = State::free;
+                slot.m_key   = 0;
+            }
+        }
+
+        while(m_q_tail != m_q_head)
+        {
+            char    key       = m_queue[m_q_tail];
+            bool    key_busy  = false;
+            int8_t  free_slot = -1;
+
+            for(uint8_t i = 0U; i < k_key_slots; i++)
+            {
+                if(State::free != m_slots[i].m_state && m_slots[i].m_key == key)
+                {
+                    key_busy = true;
+                }
+                if(State::free == m_slots[i].m_state && free_slot < 0)
+                {
+                    free_slot = static_cast<int8_t>(i);
+                }
+            }
+
+            if(key_busy || free_slot < 0)
+            {
+                break; // Same key still settling, or no free slot; retry next loop.
+            }
+
+            Keyboard.press(key);
+            m_slots[free_slot].m_key      = key;
+            m_slots[free_slot].m_state    = State::held;
+            m_slots[free_slot].m_until_ms = now + static_cast<uint32_t>(k_key_hold_ms);
+            m_q_tail                      = static_cast<uint8_t>((m_q_tail + 1U) % k_key_queue_size);
+        }
+    }
+
+private:
+    enum class State : uint8_t { free, held, cooldown };
+
+    struct Slot
+    {
+        char     m_key      = 0;             ///< Key currently held or cooling down.
+        State    m_state    = State::free;   ///< Current slot state.
+        uint32_t m_until_ms = 0U;            ///< Timestamp of the next state transition.
+    };
+
+    Slot    m_slots[k_key_slots];
+    char    m_queue[k_key_queue_size];
+    uint8_t m_q_head = 0U;
+    uint8_t m_q_tail = 0U;
+};
+
+
 // ============================================================
 // File-scope state
 // ============================================================
@@ -193,6 +315,7 @@ private:
 static PlayerState s_p1_state; ///< Runtime state for Player 1.
 static PlayerState s_p2_state; ///< Runtime state for Player 2.
 static DebugBuffer s_debug;    ///< Non-blocking debug output.
+static KeyScheduler s_keys;    ///< Non-blocking emulated-key scheduler.
 
 static Button*         s_pcint_buttons[k_max_pcint_buttons]; ///< Buttons served by the PCINT0 vector.
 static volatile uint8_t s_pcint_count = 0U;                  ///< Number of entries in s_pcint_buttons.
@@ -499,7 +622,7 @@ static bool is_coin_present(uint16_t sensor_val, uint16_t threshold, bool coin_a
  */
 static void trigger_credit(PlayerState& player_state)
 {
-    Keyboard.print(player_state.m_key_credit_ptr);
+    s_keys.enqueue(player_state.m_key_credit_ptr);
     player_state.m_dim_start_ms = millis();
     player_state.m_is_dimming   = true;
     if(DEBUG)
@@ -614,7 +737,7 @@ static void update_buttons(PlayerState& player_state)
 {
     if(true == take_press(player_state.m_start_but))
     {
-        Keyboard.print(player_state.m_key_start_ptr);
+        s_keys.enqueue(player_state.m_key_start_ptr);
         player_state.m_is_dimming = false;
         analogWrite(player_state.m_led_pin, k_led_off);
         if(DEBUG)
@@ -742,5 +865,6 @@ void loop()
         update_coin(s_p2_state);
         update_led(s_p2_state);
     }
-    update_debug();
+        s_keys.service();
+        update_debug();
 }
