@@ -7,7 +7,7 @@ and DIY enthusiasts looking to add coin-operated functionality to their projects
 
 ## Features
 - Detects coins using an IR reflective sensor.
-- Each player's IR detection sends at most one credit every 2 seconds. Sustained detection repeats credits until the sensor clears, allowing sensitivity adjustment without debug output. The first detection after startup is accepted immediately; detections during cooldown do not extend it. Coin-insert buttons retain their separate 50 ms release debounce.
+- Each player's IR detection sends at most one credit every 2 seconds. Sustained detection repeats credits until the sensor clears, allowing sensitivity adjustment without debug output. The first detection after startup is accepted immediately; detections during cooldown do not extend it. Physical buttons hold their keys until a 50 ms debounced release.
 - Simple design for easy integration into DIY arcade machines.
 - Compatible with u32u4-based microcontrollers.
 - Provides reliable coin detection for various coin sizes.
@@ -16,7 +16,7 @@ and DIY enthusiasts looking to add coin-operated functionality to their projects
 - Easy to install and maintain.
 - USB interface for easy connectivity to microcontrollers and arcade machine systems.
 - Keyboard emulation support for seamless integration with arcade machine software.
-- Coin-insert buttons for both players send the same credit key and LED animation as the IR sensors, with one credit per debounced press.
+- Coin-insert buttons for both players hold the same credit key used by the IR sensors and start the same LED animation. Only IR sensor detections generate timed key clicks.
 
 ## Specifications
 - Sensor Type: ITR20001/T IR Reflective Sensor
@@ -55,13 +55,13 @@ The phototransistor is wired with a pull-up on its collector and the signal take
 
 Set `P1_ENABLE` or `P2_ENABLE` in the firmware to `true` to enable Player 1 or Player 2. When a player is disabled, its pins are not configured, its inputs are not polled, and no keyboard events, LED updates or debug readouts are generated for that player. The other player is unaffected.
 
-Connect each optional coin-insert button between its input pin and GND: `P1_COIN_BUT` on pin 7 and `P2_COIN_BUT` on pin 15. Internal pull-ups are enabled. A press sends Player 1's credit key (`5`) or Player 2's credit key (`6`) and starts that player's repeating LED fade. Release the button for at least 50 ms before pressing again.
+Connect each optional coin-insert button between its input pin and GND: `P1_COIN_BUT` on pin 7 and `P2_COIN_BUT` on pin 15. Internal pull-ups are enabled. A press holds Player 1's credit key (`5`) or Player 2's credit key (`6`) and starts that player's repeating LED fade. The key stays down as long as the button is held and is released after the input has stayed HIGH for 50 ms. Host/game keyboard-repeat behavior applies just as with a normal keyboard.
 
 All buttons are interrupt-driven: `P1_BUT` (pin 2, INT1), `P1_COIN_BUT` (pin 7, INT6), `P2_BUT` (pin 14, PCINT3) and `P2_COIN_BUT` (pin 15, PCINT1). The interrupt records a press as soon as it happens, even while the firmware is busy, and the main loop sends the key right away. Any button pin you change must also be interrupt-capable on the ATmega32u4: pins 0, 1, 2, 3 or 7, or pin-change pins 8–11 or 14–17.
 
-Every emulated key is sent through a non-blocking scheduler so arcade software such as MAME reliably registers each press. The scheduler holds each key down for 50 ms (`k_key_hold_ms`) and then releases it, driven entirely by `millis()` with no blocking delays, so sensor polling, button handling and LED fading keep running meanwhile. Different keys are held simultaneously and independently, so one player's or input's key never cuts another short. A key is not re-pressed until it has been released for 50 ms (`k_key_gap_ms`), so repeated presses of the same key register as distinct presses. Adjust `k_key_hold_ms` and `k_key_gap_ms` if a game needs a longer key-down.
+Only ADC coin detections use timed clicks through a non-blocking scheduler so arcade software such as MAME reliably registers each detection. The scheduler holds each ADC credit key down for 50 ms (`k_key_hold_ms`) and then releases it, driven entirely by `millis()` with no blocking delays, so sensor polling, button handling and LED fading keep running meanwhile. Start and coin buttons instead hold their keys until debounced release, with no automatic key-up timer. Different keys are held simultaneously and independently, so one player's or input's key never cuts another short. A scheduled click never releases a key still held by a button; ADC clicks for that key wait until the button releases and the 50 ms released gap (`k_key_gap_ms`) expires. Waiting clicks do not block the other player's keys. Adjust `k_key_hold_ms` and `k_key_gap_ms` if a game needs a longer ADC key-down.
 
-Each enabled player's LED uses PWM (`P1_LED` pin 3, `P2_LED` pin 5) and is off at startup. An accepted IR coin or coin-button press starts continuous fading from minimum brightness up to full brightness and back, with a 2-second cycle (`k_dim_duration_ms`). The fade stays between PWM 1 (`k_led_min`) and 255, never reaching zero, so PWM remains active at the bottom of the cycle. A start-button press sends one start key (`1` or `2`) immediately, stops that player's fading, and turns the LED off. Holding Start does not repeat the key; release it for at least 50 ms before pressing again. A new credit starts the fading again.
+Each enabled player's LED uses PWM (`P1_LED` pin 3, `P2_LED` pin 5) and is off at startup. An accepted IR coin or coin-button press starts continuous fading from minimum brightness up to full brightness and back, with a 2-second cycle (`k_dim_duration_ms`). The fade stays between PWM 1 (`k_led_min`) and 255, never reaching zero, so PWM remains active at the bottom of the cycle. A start-button press holds the start key (`1` or `2`) immediately, stops that player's fading, and turns the LED off. The key stays down until Start has been released continuously for 50 ms; host/game keyboard-repeat behavior applies while held. A new credit starts the fading again.
 
 ### Pin headers out from CoinSlot Controller Box
 

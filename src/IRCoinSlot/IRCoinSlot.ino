@@ -32,27 +32,27 @@
 
 #include <Keyboard.h>
 
-#define DEBUG false             //ENABLE DEBUG PRINTS TO SERIAL MONITOR
+#define DEBUG false              //ENABLE DEBUG PRINTS TO SERIAL MONITOR
 
-#define P1_ENABLE true          //ENABLE FIRST PLAYER
-#define P1_LED 3                //BUTTON LED PWM ENABLED (TIMER0)
-#define P1_BUT 2                //BUTTON INPUT ACTIVE LOW (INT1)
-#define P1_COIN_BUT 7           //BUTTON INPUT ACTIVE LOW (SKIPPING COIN INSERT) (INT6)
-#define P1_COIN A1              //ANALOG INPUT
-#define P1_SENS A0              //SENSITIVITY POTENTIOMETER ANALOG INPUT
-#define P1_KEY_START "1"        //KEY TO SEND WHEN START BUTTON IS PRESSED
-#define P1_KEY_CREDIT "5"       //KEY TO SEND WHEN COIN IS DETECTED
+#define P1_ENABLE true           //ENABLE FIRST PLAYER
+#define P1_LED 3                 //BUTTON LED PWM ENABLED (TIMER0)
+#define P1_BUT 2                 //BUTTON INPUT ACTIVE LOW (INT1)
+#define P1_COIN_BUT 7            //BUTTON INPUT ACTIVE LOW (SKIPPING COIN INSERT) (INT6)
+#define P1_COIN A1               //ANALOG INPUT
+#define P1_SENS A0               //SENSITIVITY POTENTIOMETER ANALOG INPUT
+#define P1_KEY_START "1"         //KEY TO SEND WHEN START BUTTON IS PRESSED
+#define P1_KEY_CREDIT "5"        //KEY TO SEND WHEN COIN IS DETECTED
 
-#define P2_ENABLE true          //ENABLE SECOND PLAYER
-#define P2_LED 5                //BUTTON LED PWM ENABLED (TIMER3)
-#define P2_BUT 14               //BUTTON INPUT ACTIVE LOW (PCINT3)
-#define P2_COIN_BUT 15          //BUTTON INPUT ACTIVE LOW (SKIPPING COIN INSERT) (PCINT1)
-#define P2_COIN A2              //ANALOG INPUT
-#define P2_SENS A3              //SENSITIVITY POTENTIOMETER ANALOG INPUT
-#define P2_KEY_START "2"        //KEY TO SEND WHEN START BUTTON IS PRESSED
-#define P2_KEY_CREDIT "6"       //KEY TO SEND WHEN COIN IS DETECTED
+#define P2_ENABLE true           //ENABLE SECOND PLAYER
+#define P2_LED 5                 //BUTTON LED PWM ENABLED (TIMER3)
+#define P2_BUT 14                //BUTTON INPUT ACTIVE LOW (PCINT3)
+#define P2_COIN_BUT 15           //BUTTON INPUT ACTIVE LOW (SKIPPING COIN INSERT) (PCINT1)
+#define P2_COIN A2               //ANALOG INPUT
+#define P2_SENS A3               //SENSITIVITY POTENTIOMETER ANALOG INPUT
+#define P2_KEY_START "2"         //KEY TO SEND WHEN START BUTTON IS PRESSED
+#define P2_KEY_CREDIT "6"        //KEY TO SEND WHEN COIN IS DETECTED
 
-#define DIM_DELAY           5   //DIMMER SPEED - LED PWM UPDATE INTERVAL IN MS
+#define DIM_DELAY           5    //DIMMER SPEED - LED PWM UPDATE INTERVAL IN MS
 #define COIN_DEBOUNCE_DELAY 2000 //ADC COIN COOLDOWN AFTER AN ACCEPTED INSERT, IN MS
 
 constexpr uint8_t  k_led_full          = 255;  ///< Peak button LED brightness during the fade (PWM 0-255).
@@ -67,7 +67,7 @@ constexpr uint16_t k_coin_hysteresis   = 30;   ///< Release threshold offset abo
 constexpr uint32_t k_debug_interval_ms = 2000; ///< Interval between analog debug readouts.
 constexpr uint16_t k_debug_buf_size    = 512;  ///< Size of the non-blocking debug output ring buffer.
 constexpr uint8_t  k_max_pcint_buttons = 4;    ///< Maximum number of buttons sharing the PCINT0 vector.
-constexpr uint16_t k_key_hold_ms       = 50;   ///< How long each emulated key is held down, in ms.
+constexpr uint16_t k_key_hold_ms       = 50;   ///< How long each ADC-triggered key click is held down, in ms.
 constexpr uint16_t k_key_gap_ms        = 50;   ///< Released gap enforced before the same key repeats, in ms.
 constexpr uint8_t  k_key_slots         = 6;    ///< Distinct keys that can be held or cooling down at once.
 constexpr uint8_t  k_key_queue_size    = 16;   ///< Pending key-press requests buffered before dispatch.
@@ -89,6 +89,7 @@ struct Button
     uint8_t         m_pin;              ///< Digital input pin (INPUT_PULLUP, active LOW).
     volatile bool   m_armed;            ///< True when a new press may be latched.
     volatile bool   m_pending;          ///< True when a press was latched by the ISR and not yet handled.
+    bool            m_key_down;        ///< True while this button owns a held keyboard key.
     uint32_t        m_high_since_ms;    ///< Timestamp when the pin was first seen HIGH while disarmed.
     bool            m_high_seen;        ///< True while the pin has been continuously HIGH since m_high_since_ms.
 };
@@ -193,10 +194,11 @@ private:
 /**
  * @brief Non-blocking keyboard key scheduler.
  *
- * Emulated key presses are queued, then each key is held down for k_key_hold_ms and
+ * ADC key clicks are queued, then each key is held down for k_key_hold_ms and
  * released, all driven by millis() in service() with no delay() anywhere. Distinct keys
  * are held simultaneously and independently, so one player's or input's key never cuts
- * another short. A key that is still held (or within its k_key_gap_ms released gap) is
+ * another short. Buttons hold their keys independently until debounced release.
+ * A key that is still held (or within its k_key_gap_ms released gap) is
  * not re-pressed until that gap elapses, so repeated presses of the same key register as
  * separate presses. This gives arcade software such as MAME a key-down long enough to
  * sample without ever blocking sensor polling, button handling or LED updates.
@@ -204,6 +206,63 @@ private:
 class KeyScheduler
 {
 public:
+    /**
+     * @brief Hold or release a button's keys without cutting short another input.
+     * @return false if there are not enough slots for the configured key string.
+     */
+    bool set_button(const char* key_ptr, bool down)
+    {
+        for(const char* p = key_ptr; '\0' != *p; ++p)
+        {
+            Slot* slot = nullptr;
+            Slot* free_slot = nullptr;
+            for(uint8_t i = 0U; i < k_key_slots; ++i)
+            {
+                Slot& candidate = m_slots[i];
+                if((State::free != candidate.m_state || 0U != candidate.m_button_count)
+                   && candidate.m_key == *p)
+                {
+                    slot = &candidate;
+                    break;
+                }
+                if(nullptr == free_slot && State::free == candidate.m_state
+                   && 0U == candidate.m_button_count)
+                {
+                    free_slot = &candidate;
+                }
+            }
+
+            if(down)
+            {
+                if(nullptr == slot)
+                {
+                    slot = free_slot;
+                }
+                if(nullptr == slot)
+                {
+                    return false;
+                }
+                slot->m_key = *p;
+                if(0U == slot->m_button_count && State::held != slot->m_state)
+                {
+                    Keyboard.press(*p);
+                }
+                ++slot->m_button_count;
+            }
+            else if(nullptr != slot && 0U != slot->m_button_count)
+            {
+                --slot->m_button_count;
+                if(0U == slot->m_button_count && State::held != slot->m_state)
+                {
+                    Keyboard.release(*p);
+                    slot->m_state = State::cooldown;
+                    slot->m_until_ms = millis() + static_cast<uint32_t>(k_key_gap_ms);
+                }
+            }
+        }
+        return true;
+    }
+
     /**
      * @brief Queue a key string for non-blocking emulation.
      *
@@ -236,7 +295,7 @@ public:
      *
      * Releases any key whose k_key_hold_ms hold has elapsed, frees any key whose
      * k_key_gap_ms released gap has elapsed, then presses queued keys into free slots.
-     * A key already held or cooling down is left queued until its gap expires, so repeats
+     * A key already held or cooling down stays queued until its gap expires, so repeats
      * of the same key stay distinct. Uses only millis() comparisons and never blocks.
      * Call once per main-loop iteration.
      */
@@ -249,18 +308,25 @@ public:
             Slot& slot = m_slots[i];
             if(State::held == slot.m_state && (now - slot.m_until_ms) < 0x80000000UL)
             {
-                Keyboard.release(slot.m_key);
+                if(0U == slot.m_button_count)
+                {
+                    Keyboard.release(slot.m_key);
+                }
                 slot.m_state    = State::cooldown;
                 slot.m_until_ms = now + static_cast<uint32_t>(k_key_gap_ms);
             }
             else if(State::cooldown == slot.m_state && (now - slot.m_until_ms) < 0x80000000UL)
             {
                 slot.m_state = State::free;
-                slot.m_key   = 0;
+                if(0U == slot.m_button_count)
+                {
+                    slot.m_key = 0;
+                }
             }
         }
 
-        while(m_q_tail != m_q_head)
+        uint8_t pending = static_cast<uint8_t>((m_q_head + k_key_queue_size - m_q_tail) % k_key_queue_size);
+        while(0U != pending--)
         {
             char    key       = m_queue[m_q_tail];
             bool    key_busy  = false;
@@ -268,19 +334,29 @@ public:
 
             for(uint8_t i = 0U; i < k_key_slots; i++)
             {
-                if(State::free != m_slots[i].m_state && m_slots[i].m_key == key)
+                if((State::free != m_slots[i].m_state || 0U != m_slots[i].m_button_count)
+                   && m_slots[i].m_key == key)
                 {
                     key_busy = true;
                 }
-                if(State::free == m_slots[i].m_state && free_slot < 0)
+                if(State::free == m_slots[i].m_state && 0U == m_slots[i].m_button_count
+                   && free_slot < 0)
                 {
                     free_slot = static_cast<int8_t>(i);
                 }
             }
 
-            if(key_busy || free_slot < 0)
+            if(free_slot < 0)
             {
-                break; // Same key still settling, or no free slot; retry next loop.
+                break;
+            }
+            if(key_busy)
+            {
+                // A held button must not block the other player's ADC clicks.
+                m_queue[m_q_head] = key;
+                m_q_head = static_cast<uint8_t>((m_q_head + 1U) % k_key_queue_size);
+                m_q_tail = static_cast<uint8_t>((m_q_tail + 1U) % k_key_queue_size);
+                continue;
             }
 
             Keyboard.press(key);
@@ -299,6 +375,7 @@ private:
         char     m_key      = 0;             ///< Key currently held or cooling down.
         State    m_state    = State::free;   ///< Current slot state.
         uint32_t m_until_ms = 0U;            ///< Timestamp of the next state transition.
+        uint8_t  m_button_count = 0U;        ///< Buttons currently holding this key.
     };
 
     Slot    m_slots[k_key_slots];
@@ -331,7 +408,9 @@ static void     init_player(PlayerState& player_state, uint8_t id, uint8_t led_p
 static void     init_button(Button& button, uint8_t pin, void (*isr)());
 static void     button_isr(Button& button);
 static bool     take_press(Button& button);
-static void     rearm_button(Button& button);
+static bool     rearm_button(Button& button);
+static void     update_button_key(Button& button, const char* key_ptr);
+static void     start_credit_animation(PlayerState& player_state);
 static void     trigger_credit(PlayerState& player_state);
 static uint16_t read_threshold(const PlayerState& player_state);
 static uint16_t release_threshold(uint16_t threshold);
@@ -402,12 +481,13 @@ static bool take_press(Button& button)
 /**
  * @brief Re-arm a disarmed button once it has been released for k_but_debounce_ms.
  * @param button Button to update.
+ * @return true when a debounced release has been accepted.
  */
-static void rearm_button(Button& button)
+static bool rearm_button(Button& button)
 {
     if(true == button.m_armed)
     {
-        return;
+        return false;
     }
 
     uint32_t now = millis();
@@ -415,14 +495,14 @@ static void rearm_button(Button& button)
     if(LOW == digitalRead(button.m_pin))
     {
         button.m_high_seen = false;
-        return;
+        return false;
     }
 
     if(false == button.m_high_seen)
     {
         button.m_high_seen     = true;
         button.m_high_since_ms = now;
-        return;
+        return false;
     }
 
     if((now - button.m_high_since_ms) >= static_cast<uint32_t>(k_but_debounce_ms))
@@ -434,7 +514,9 @@ static void rearm_button(Button& button)
         button_isr(button);
         SREG = old_sreg;
         button.m_high_seen = false;
+        return true;
     }
+    return false;
 }
 
 
@@ -448,6 +530,7 @@ static void init_button(Button& button, uint8_t pin, void (*isr)())
 {
     button.m_pin           = pin;
     button.m_pending       = false;
+    button.m_key_down      = false;
     button.m_high_seen     = false;
     button.m_high_since_ms = 0U;
 
@@ -617,17 +700,26 @@ static bool is_coin_present(uint16_t sensor_val, uint16_t threshold, bool coin_a
 
 
 /**
- * @brief Send the credit key and start repeating PWM fading until Start is pressed.
+ * @brief Start repeating PWM fading until Start is pressed.
  * @param player_state Reference to the player state to modify.
+ */
+static void start_credit_animation(PlayerState& player_state)
+{
+    player_state.m_dim_start_ms = millis();
+    player_state.m_is_dimming   = true;
+    debug_event(player_state, F("Credit accepted; LED animation started"));
+}
+
+
+/**
+ * @brief Queue an ADC credit click and start the credit animation.
  */
 static void trigger_credit(PlayerState& player_state)
 {
     s_keys.enqueue(player_state.m_key_credit_ptr);
-    player_state.m_dim_start_ms = millis();
-    player_state.m_is_dimming   = true;
+    start_credit_animation(player_state);
     if(DEBUG)
     {
-        debug_event(player_state, F("Credit accepted; LED animation started"));
         s_debug.print(F("Credit key sent: "));
         s_debug.println(player_state.m_key_credit_ptr);
     }
@@ -726,10 +818,23 @@ static void update_coin(PlayerState& player_state)
 
 
 /**
- * @brief Handle presses latched by the button ISRs and re-arm released buttons.
+ * @brief Release a button's key after its debounced release, then re-arm it.
+ */
+static void update_button_key(Button& button, const char* key_ptr)
+{
+    if(true == rearm_button(button) && true == button.m_key_down)
+    {
+        s_keys.set_button(key_ptr, false);
+        button.m_key_down = false;
+    }
+}
+
+
+/**
+ * @brief Handle presses latched by the button ISRs and release keys with the buttons.
  *
- * Start: sends one start key per press, stops LED fading and turns the LED off.
- * Coin button: triggers one credit per press.
+ * Start: holds the start key, stops LED fading and turns the LED off.
+ * Coin button: holds the credit key and starts LED fading.
  *
  * @param player_state Reference to the player state.
  */
@@ -737,13 +842,17 @@ static void update_buttons(PlayerState& player_state)
 {
     if(true == take_press(player_state.m_start_but))
     {
-        s_keys.enqueue(player_state.m_key_start_ptr);
+        player_state.m_start_but.m_key_down = true;
+        if(false == s_keys.set_button(player_state.m_key_start_ptr, true))
+        {
+            s_debug.println(F("ERROR: no key slot for start button"));
+        }
         player_state.m_is_dimming = false;
         analogWrite(player_state.m_led_pin, k_led_off);
         if(DEBUG)
         {
             debug_event(player_state, F("Start button pressed; LED fading stopped, LED off"));
-            s_debug.print(F("Start key sent: "));
+            s_debug.print(F("Start key held: "));
             s_debug.println(player_state.m_key_start_ptr);
         }
     }
@@ -751,11 +860,16 @@ static void update_buttons(PlayerState& player_state)
     if(true == take_press(player_state.m_coin_but))
     {
         debug_event(player_state, F("Coin-insert button pressed"));
-        trigger_credit(player_state);
+        player_state.m_coin_but.m_key_down = true;
+        if(false == s_keys.set_button(player_state.m_key_credit_ptr, true))
+        {
+            s_debug.println(F("ERROR: no key slot for coin button"));
+        }
+        start_credit_animation(player_state);
     }
 
-    rearm_button(player_state.m_start_but);
-    rearm_button(player_state.m_coin_but);
+    update_button_key(player_state.m_start_but, player_state.m_key_start_ptr);
+    update_button_key(player_state.m_coin_but, player_state.m_key_credit_ptr);
 }
 
 
